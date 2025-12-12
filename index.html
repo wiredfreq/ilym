@@ -3,11 +3,13 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>ilym Music Player</title>
+    <title>ILYM Music Player</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <!-- Google Material Icons (Round Style) -->
     <link href="https://fonts.googleapis.com/icon?family=Material+Icons+Round" rel="stylesheet">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <!-- ID3 Tag Reader Library -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jsmediatags/3.9.5/jsmediatags.min.js"></script>
     <style>
         :root {
             --bg-color: #e6e6e6;
@@ -156,7 +158,7 @@
 
         /* Album Art Spin Animation */
         .spin-slow {
-            animation: spin 8s linear infinite;
+            animation: spin 6s linear infinite; /* 8s -> 6s (approx 1.33x faster) */
         }
         .spin-paused {
             animation-play-state: paused;
@@ -164,6 +166,17 @@
         @keyframes spin {
             from { transform: rotate(0deg); }
             to { transform: rotate(360deg); }
+        }
+
+        /* Default Vinyl Style */
+        .vinyl-style {
+            background: conic-gradient(from 0deg, #111, #333, #111);
+        }
+        /* Cover Art Style */
+        .cover-style {
+            background-size: cover;
+            background-position: center;
+            background-repeat: no-repeat;
         }
     </style>
 </head>
@@ -176,23 +189,23 @@
         <div class="flex justify-between items-center h-12 flex-shrink-0">
             <div class="text-2xl font-bold tracking-tighter text-gray-800 ml-1">ilym</div>
             
-            <!-- Oval Speaker Grill (Enlarged 1.5x) -->
+            <!-- Oval Speaker Grill -->
             <div class="w-36 h-12 rounded-full overflow-hidden relative border border-gray-300/50 shadow-inner bg-[#ececec]">
                 <div class="speaker-grill"></div>
             </div>
         </div>
 
-        <!-- Display Area (Compact & Information Rich) -->
+        <!-- Display Area -->
         <div class="bg-[#222] rounded-lg p-5 text-white shadow-[inset_0_2px_10px_rgba(0,0,0,0.3)] flex flex-col gap-4 flex-shrink-0 relative overflow-hidden">
             
             <!-- Top Section: Album Art & Text -->
             <div class="flex items-center gap-4">
                 <!-- Album Art (Vinyl Style) -->
                 <div class="w-16 h-16 flex-shrink-0 relative rounded-full overflow-hidden shadow-lg bg-black border-2 border-gray-800">
-                    <!-- Placeholder Vinyl Gradient -->
-                    <div id="album-art" class="absolute inset-0 bg-[conic-gradient(from_0deg,#111,#333,#111)] opacity-80 spin-slow spin-paused"></div>
-                    <!-- Center Label -->
-                    <div class="absolute inset-0 m-auto w-6 h-6 bg-orange-600 rounded-full border-2 border-black"></div>
+                    <!-- Art Container -->
+                    <div id="album-art" class="absolute inset-0 vinyl-style opacity-90 spin-slow spin-paused"></div>
+                    <!-- Center Label (Hole) -->
+                    <div id="center-label" class="absolute inset-0 m-auto w-6 h-6 bg-orange-600 rounded-full border-2 border-black z-10"></div>
                 </div>
 
                 <!-- Info Text -->
@@ -236,7 +249,6 @@
                     </button>
 
                     <button id="btn-play" class="rams-btn orange w-14 h-14 shadow-xl hover:shadow-orange-500/40 transition-transform active:scale-95 z-10 flex items-center justify-center">
-                        <!-- Play icon pushed slightly right for optical balance -->
                         <span class="material-icons-round text-[36px] pl-1">play_arrow</span>
                     </button>
 
@@ -293,10 +305,11 @@
 
         // --- Core Audio Logic ---
         const audio = new Audio();
-        audio.crossOrigin = "anonymous";
+        audio.crossOrigin = "anonymous"; // Important for CORS reading
 
-        // Initial default playlist (will be overwritten by auto-load)
-        let playlist = [];
+        let playlist = [
+             { url: 'https://cdn.pixabay.com/audio/2022/05/27/audio_1808fbf07a.mp3', title: 'Demo: Lofi Chill' }
+        ];
         let currentIndex = 0;
         let isPlaying = false;
         let isShuffle = false;
@@ -311,6 +324,7 @@
         const elSeekSlider = document.getElementById('seek-slider');
         const elProgress = document.getElementById('progress-indicator');
         const elAlbumArt = document.getElementById('album-art');
+        const elCenterLabel = document.getElementById('center-label');
         
         const inpUrl = document.getElementById('url-input');
         const elStatus = document.getElementById('status-text');
@@ -324,7 +338,6 @@
         window.onload = () => {
             if(AUTO_LOAD_URL) {
                 inpUrl.value = AUTO_LOAD_URL;
-                // 약간의 딜레이 후 실행 (UI 로딩 안정성)
                 setTimeout(() => handleAdd(), 500);
             } else {
                 renderPlaylist();
@@ -376,41 +389,93 @@
             setTimeout(() => nextTrack(true), 2000);
         });
 
+        // --- Metadata Extraction (ID3) ---
+        function resetMetadataDisplay(filename) {
+            elTitle.innerText = filename || "Unknown Track";
+            elArtist.innerText = "Unknown Artist";
+            elAlbumArt.style.backgroundImage = '';
+            elAlbumArt.classList.remove('cover-style');
+            elAlbumArt.classList.add('vinyl-style');
+            elCenterLabel.style.display = 'block'; // Show center label for vinyl mode
+        }
+
+        async function extractMetadata(fileOrBlob) {
+            // Using jsmediatags
+            if (!window.jsmediatags) return;
+
+            new window.jsmediatags.Reader(fileOrBlob)
+                .setTagsToRead(["title", "artist", "picture"])
+                .read({
+                    onSuccess: function(tag) {
+                        const tags = tag.tags;
+                        if (tags.title) elTitle.innerText = tags.title;
+                        if (tags.artist) elArtist.innerText = tags.artist;
+                        
+                        if (tags.picture) {
+                            const { data, format } = tags.picture;
+                            let base64String = "";
+                            for (let i = 0; i < data.length; i++) {
+                                base64String += String.fromCharCode(data[i]);
+                            }
+                            const imageUrl = `data:${format};base64,${window.btoa(base64String)}`;
+                            
+                            // Apply Cover Art
+                            elAlbumArt.style.backgroundImage = `url('${imageUrl}')`;
+                            elAlbumArt.classList.remove('vinyl-style');
+                            elAlbumArt.classList.add('cover-style');
+                            elCenterLabel.style.display = 'none'; // Hide label when cover is shown
+                        }
+                    },
+                    onError: function(error) {
+                        console.log('ID3 read error:', error.type, error.info);
+                    }
+                });
+        }
+
         // --- Controls ---
-        function loadTrack(index) {
+        async function loadTrack(index) {
             if(index < 0 || index >= playlist.length) return;
             currentIndex = index;
             
             const track = playlist[currentIndex];
-            if (track.file) {
-                audio.src = URL.createObjectURL(track.file);
-            } else {
-                audio.src = track.url;
-            }
-            
-            // Basic metadata parsing for display
-            let displayTitle = track.title;
-            let displayArtist = "Unknown Artist";
-            
-            if (displayTitle.includes('-')) {
-                const parts = displayTitle.split('-');
-                if (parts.length >= 2) {
-                    displayArtist = parts[0].trim();
-                    displayTitle = parts.slice(1).join('-').trim();
-                }
-            } else {
-                displayTitle = displayTitle.replace(/\.(mp3|wav|ogg)$/i, '');
-            }
+            let blob = null;
 
-            elTitle.innerText = displayTitle;
-            elArtist.innerText = displayArtist;
-            
+            // Update UI immediately
+            elTitle.innerText = "Buffering...";
+            elArtist.innerText = "Please wait";
             renderPlaylist();
-            
-            audio.play().catch(error => {
-                console.log("Playback prevented:", error);
-                updatePlayButtonUI(false);
-            });
+
+            try {
+                if (track.file) {
+                    // Local File
+                    blob = track.file;
+                    audio.src = URL.createObjectURL(blob);
+                    resetMetadataDisplay(track.title);
+                    extractMetadata(blob);
+                } else {
+                    // Remote File (Need to fetch blob for ID3 tags)
+                    const response = await fetch(track.url);
+                    blob = await response.blob();
+                    audio.src = URL.createObjectURL(blob);
+                    
+                    // Fallback name
+                    let cleanName = track.title.replace(/\.(mp3|wav|ogg)$/i, '');
+                    resetMetadataDisplay(cleanName);
+                    
+                    extractMetadata(blob);
+                }
+
+                // Play
+                audio.play().catch(error => {
+                    console.log("Playback prevented:", error);
+                    updatePlayButtonUI(false);
+                });
+
+            } catch (e) {
+                console.error("Load failed:", e);
+                elTitle.innerText = "Load Failed";
+                setTimeout(() => nextTrack(true), 2000);
+            }
         }
 
         function nextTrack(auto = false) {
@@ -555,14 +620,14 @@
         function finishAdd() {
             renderPlaylist();
             elStatus.innerText = "Ready";
-            // Auto-load first track but don't auto-play to avoid blocking policies sometimes, 
-            // or we can try. Let's load metadata.
+            // Pre-load metadata for first track without playing? 
+            // For now, just show list. User must click to play/load.
             if(playlist.length > 0) {
-                currentIndex = 0;
-                const track = playlist[0];
-                elTitle.innerText = track.title.replace(/\.(mp3|wav|ogg)$/i, '');
+                // Set initial text
+                let first = playlist[0];
+                let name = first.title.replace(/\.(mp3|wav|ogg)$/i, '');
+                elTitle.innerText = name;
                 elArtist.innerText = "Ready to Play";
-                // Don't auto-play immediately on load to be safe, user presses play
             }
         }
 
